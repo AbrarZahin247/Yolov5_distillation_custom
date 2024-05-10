@@ -71,6 +71,109 @@ RANK = int(os.getenv('RANK', -1))
 WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
 GIT_INFO = check_git_info()
 
+import pathlib
+temp = pathlib.PosixPath
+pathlib.PosixPath = pathlib.WindowsPath
+
+
+def generate_gt_boxes(images,targets):
+  batch_size = images.size(0)
+  gt_boxes = [[] for i in range(batch_size)]
+  for i in range(len(targets)):
+      gt_boxes[int(targets[i, 0].data)] += [targets[i, 2:].clone().detach().unsqueeze(0)]
+  print(f"gtboxes size ==> {len(gt_boxes[0])}")
+  return gt_boxes
+
+def create_masks_from_batch(batch_images, n=8, divisor=16):
+    batch_size, _, image_size, _ = batch_images.size()
+    mask_size = image_size // divisor
+    
+    # Generate random positions for the top-left corner of each mask within each image
+    
+
+    # Initialize a list to hold individual masks for each image
+    masks_list = []
+
+    # Set random square regions to 1 in each mask for each image
+    for j in range(n):
+        for i in range(batch_size):
+            mask_positions_x = torch.randint(0, image_size - mask_size, (batch_size, n))
+            mask_positions_y = torch.randint(0, image_size - mask_size, (batch_size, n))
+            mask = torch.zeros((batch_size, 3, image_size, image_size))  # Initialize mask for 3 layers
+            x, y = mask_positions_x[i, j], mask_positions_y[i, j]
+            mask[j, :, x:x+mask_size, y:y+mask_size] = 1
+        masks_list.append(mask)
+    return 
+    
+def get_feature_map(model,batched_images,batch_collected_masks,targets):
+    batch_size, _, image_size, _ = batched_images.size()
+    feature_map_list=[]
+    for single_batch_mask in batch_collected_masks:
+        masked_image=batched_images*single_batch_mask
+        feature_map=model(masked_image,targets)
+        feature_map_list.append(feature_map)
+    return feature_map_list
+  
+
+def generate_batch_masks(batch_images, targets):
+    print(f"batch image size ===> {batch_images.size()}")
+    print(f"targets image size ===> {targets.size()}")
+    batch_masks = []
+    gt_boxes=generate_gt_boxes(batch_images,targets)
+    for i in range(len(gt_boxes[0])):
+        image_size = batch_images.size(-2), batch_images.size(-1)  # Extract image size from batch image tensor
+        image_masks = []
+        for target in targets:
+          print(target)
+          x, y, w, h,_,__ =target
+          x1 = x - w / 2
+          y1 = y - h / 2
+          x2 = x + w / 2
+          y2 = y + h / 2
+
+          # print(f"bbox==>{x1,y1,x2,y2,_,__}")
+          # Convert bounding box coordinates to pixel coordinates
+          x1 = int(x1 * image_size[1])
+          y1 = int(y1 * image_size[0])
+          x2 = int(x2 * image_size[1])
+          y2 = int(y2 * image_size[0])
+
+
+        for j in range(targets.shape[0]):  # Iterate over all targets
+            # Extract bounding box coordinates in XYWHN format
+            # print(f"target --> {targets[j].size()}")
+            x, y, w, h, _,__ = targets[j]
+            # Convert XYWHN to XYXY format
+            x1 = x - w / 2
+            y1 = y - h / 2
+            x2 = x + w / 2
+            y2 = y + h / 2
+
+            # print(f"bbox==>{x1,y1,x2,y2,_,__}")
+            # Convert bounding box coordinates to pixel coordinates
+            x1 = int(x1 * image_size[1])
+            y1 = int(y1 * image_size[0])
+            x2 = int(x2 * image_size[1])
+            y2 = int(y2 * image_size[0])
+            # Create a binary mask for the target
+            mask = torch.zeros(image_size)
+            # print(f"mask==>{mask.size()}")
+            
+            mask[y1:y2, x1:x2] = 1
+            image_masks.append(mask.unsqueeze(0))  # Add a batch dimension
+        # Stack masks for the image along the batch dimension
+        if len(image_masks) > 0:
+            image_masks = torch.cat(image_masks, dim=0)
+            batch_masks.append(image_masks.unsqueeze(0))  # Add a batch dimension
+        else:
+            # If no masks were created for the image, add an empty mask
+            batch_masks.append(torch.zeros(0, *image_size))
+
+    # Stack masks for all images along the batch dimension
+    batch_masks = torch.cat(batch_masks, dim=0)
+    print("batch image mask size ==> {batch_masks.size()}")
+
+    return batch_masks
 
 def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictionary
     save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze = \
@@ -297,8 +400,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     if opt.teacher_weight:
         dump_image = torch.zeros((1, 3, opt.imgsz, opt.imgsz), device=device)
         targets = torch.Tensor([[0, 0, 0, 0, 0, 0]]).to(device)
-        _, features, _ = model(dump_image, target=targets)  # forward
-        _, teacher_feature, _ = teacher_model(dump_image, target=targets) 
+        _,features= model(dump_image, target=targets)  # forward
+        _, teacher_feature= teacher_model(dump_image, target=targets) 
         
         _, student_channel, student_out_size, _ = features.shape
         _, teacher_channel, teacher_out_size, _ = teacher_feature.shape
@@ -321,7 +424,10 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         # Update mosaic border (optional)
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
-
+        # train_features, train_labels = next(iter(train_loader))
+        # print(f"train feature ==> {train_features}")
+        # print(f"train labels ==> {train_labels}")
+        
         mloss = torch.zeros(3, device=device)  # mean losses
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
@@ -358,10 +464,25 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
             with torch.cuda.amp.autocast(amp):
                 targets = targets.to(device)
+                generated_random_masks=create_masks_from_batch(imgs)
+                print(f"random masks ==> {generated_random_masks[0].size()}")
+
+                # generate_gt_boxes(imgs,targets)
+                # batch_img_masks=generate_batch_masks(imgs,targets)
+                print(f"targets batched ==> {targets.size()}")
+                print(f"image batched ==> {imgs.size()}")
+                # masked_images = imgs * batch_img_masks.unsqueeze(1)
+                
                 if opt.teacher_weight:
-                    pred, features, _ = model(imgs, target=targets)  # forward
-                    _, teacher_feature, mask = teacher_model(imgs, target=targets)
-                    loss, loss_items = compute_loss(pred, targets, teacher_feature.detach(), stu_feature_adapt(features), mask.detach())  # loss scaled by batch_size
+                    student_multi_feature_maps=get_feature_map(model,imgs,generated_random_masks,targets)
+                    teacher_multi_feature_maps=get_feature_map(teacher_model,imgs,generated_random_masks,targets)
+                    
+                    
+                    pred, features = model(imgs, target=targets)
+                    teacher_preds, teacher_feature = teacher_model(imgs, target=targets)
+                    print(f"student feature ==> {features.size()}")
+                    
+                    loss, loss_items = compute_loss(pred, targets, teacher_feature.detach(), stu_feature_adapt(features),teacher_multi_feature_maps.detach(),stu_feature_adapt(student_multi_feature_maps))  # loss scaled by batch_size
                 else:
                     pred = model(imgs)  # forward
                     loss, loss_items = compute_loss(pred, targets)  # loss scaled by batch_size

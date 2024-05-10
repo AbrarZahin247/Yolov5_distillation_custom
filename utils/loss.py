@@ -97,6 +97,28 @@ def imitation_loss(teacher, student, mask):
 
     return diff
 
+def feature_cross_entropy(feature_map1, feature_map2):
+    loss=0
+    if(feature_map1 is not None and feature_map2 is not None):
+        # loss = F.binary_cross_entropy_with_logits(F.sigmoid(feature_map1), F.sigmoid(feature_map2))
+        loss = F.binary_cross_entropy_with_logits(feature_map1, feature_map2)
+    return loss
+
+def masked_multi_teacher_student_loss(multi_masked_teachers,multi_masked_students):
+    feature_loss_tot=[]
+    indentity_index=0
+    for teacher_feature,student_feature in zip(multi_masked_teachers,multi_masked_students):
+        feature_loss=feature_cross_entropy(teacher_feature,student_feature)
+        feature_loss_tot.append(feature_loss)
+    return sum(feature_loss_tot) / len(feature_loss_tot)
+
+
+
+def diff_masked_and_not_masked_feature(feature,masked_feature,teacher_feature,masked_teacher_feature):
+    feature_loss=feature_cross_entropy(feature,teacher_feature)
+    masked_feature_loss=feature_cross_entropy(masked_feature,masked_teacher_feature)
+    return feature_loss+masked_feature_loss
+
 
 class ComputeLoss:
     sort_obj_iou = False
@@ -128,7 +150,7 @@ class ComputeLoss:
         self.anchors = m.anchors
         self.device = device
 
-    def __call__(self, p, targets, teacher=None, student=None, mask=None):  # predictions, targets, model
+    def __call__(self, p, targets, teacher=None, student=None, multi_teachers=None, multi_students=None):  # predictions, targets, model
         lcls = torch.zeros(1, device=self.device)  # class loss
         lbox = torch.zeros(1, device=self.device)  # box loss
         lobj = torch.zeros(1, device=self.device)  # object loss
@@ -182,9 +204,11 @@ class ComputeLoss:
         lcls *= self.hyp['cls']
         bs = tobj.shape[0]  # batch size
 
-        lmask = imitation_loss(teacher, student, mask) * 0.01
-
-        return (lbox + lobj + lcls + lmask) * bs, torch.cat((lbox, lobj, lcls)).detach()
+        # lmask = imitation_loss(teacher, student, mask) * 0.01
+        if(multi_teachers!=None and multi_students!=None):
+            lmasked_loss=masked_multi_teacher_student_loss(multi_teachers,multi_students)
+        print(f"masked_loss ===> {lmasked_loss}")
+        return (lbox + lobj + lcls + lmasked_loss) * bs, torch.cat((lbox, lobj, lcls)).detach()
 
     def build_targets(self, p, targets):
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
