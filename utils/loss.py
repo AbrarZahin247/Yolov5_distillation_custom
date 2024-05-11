@@ -5,7 +5,7 @@ Loss functions
 
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
 from utils.metrics import bbox_iou
 from utils.torch_utils import de_parallel
 
@@ -106,8 +106,8 @@ def feature_cross_entropy(feature_map1, feature_map2):
 
 def masked_multi_teacher_student_loss(multi_masked_teachers,multi_masked_students):
     feature_loss_tot=[]
-    indentity_index=0
     for teacher_feature,student_feature in zip(multi_masked_teachers,multi_masked_students):
+        teacher_feature=teacher_feature.detach()
         feature_loss=feature_cross_entropy(teacher_feature,student_feature)
         feature_loss_tot.append(feature_loss)
     return sum(feature_loss_tot) / len(feature_loss_tot)
@@ -154,6 +154,7 @@ class ComputeLoss:
         lcls = torch.zeros(1, device=self.device)  # class loss
         lbox = torch.zeros(1, device=self.device)  # box loss
         lobj = torch.zeros(1, device=self.device)  # object loss
+        lcustom = torch.zeros(1, device=self.device)  # custom loss
         tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets
 
         # Losses
@@ -204,11 +205,12 @@ class ComputeLoss:
         lcls *= self.hyp['cls']
         bs = tobj.shape[0]  # batch size
 
+        
         # lmask = imitation_loss(teacher, student, mask) * 0.01
         if(multi_teachers!=None and multi_students!=None):
-            lmasked_loss=masked_multi_teacher_student_loss(multi_teachers,multi_students)
-        print(f"masked_loss ===> {lmasked_loss}")
-        return (lbox + lobj + lcls + lmasked_loss) * bs, torch.cat((lbox, lobj, lcls)).detach()
+            lcustom+=torch.tensor(masked_multi_teacher_student_loss(multi_teachers,multi_students))
+            # print(f"masked_loss ===> {lmasked_loss}")
+        return (lbox + lobj + lcls + lcustom) * bs, torch.cat((lbox, lobj, lcls,lcustom)).detach()
 
     def build_targets(self, p, targets):
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)

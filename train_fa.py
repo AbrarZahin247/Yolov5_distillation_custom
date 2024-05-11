@@ -161,7 +161,8 @@ def create_masks_from_batch(batch_images, n=1, divisor=16):
     
     # Set random square regions to 1 in each mask for each image using advanced indexing
     masks[torch.arange(batch_size).unsqueeze(1), :, mask_positions_x, mask_positions_y] = 1
-    return masks
+    inverted_mask=1-masks
+    return masks,inverted_mask
     
     # masks_list.append(masks)
     
@@ -498,8 +499,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         # print(f"train feature ==> {train_features}")
         # print(f"train labels ==> {train_labels}")
 
-        mloss = torch.zeros(3, device=device)  # mean losses
-        mloss_show = torch.zeros(4, device=device)  # mean losses
+        # mloss = torch.zeros(3, device=device)  # mean losses
+        mloss = torch.zeros(4, device=device)  # mean losses
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
@@ -536,7 +537,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
             with torch.cuda.amp.autocast(amp):
                 targets = targets.to(device)
-                generated_masks=create_masks_from_batch(imgs)
+                generated_masks,inverted_masks=create_masks_from_batch(imgs)
                 # print(f"random masks ==> {generated_masks.size()}")
                 # print(f"random masks ==> {generated_random_masks[0].size()}")
 
@@ -553,8 +554,10 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                     
                     
                     masked_batch_images=imgs.to("cpu")*generated_masks
+                    inverted_masked_batch_images=imgs.to("cpu")*inverted_masks
                     masked_batch_images=masked_batch_images.to(device)
                     pred,std_feat=model(masked_batch_images,target=targets)
+                    pred,std_feat_inv=model(inverted_masked_batch_images,target=targets)
                     _,teacher_feat=teacher_model(masked_batch_images,target=targets)
                     student_feature_maps.append(std_feat)
                     teacher_feature_maps.append(teacher_feat)
@@ -596,14 +599,11 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
             # Log
             if RANK in {-1, 0}:
-                # print(f"log items log --> {loss_items}")
-                mloss = (mloss * i + loss_items[:-1]) / (i + 1)  # update mean losses for train logger
-                mloss_show = (mloss_show * i + loss_items) / (i + 1)  # update mean losses for train end validation
+                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
                 pbar.set_description(('%11s' * 2 + '%11.4g' *5+'%15.4g') %
-                                     (f'{epoch}/{epochs - 1}', mem, *mloss_show, targets.shape[0], imgs.shape[-1]))
-                ### at end ignore mloss
-                callbacks.run('on_train_batch_end', model, ni, imgs, targets, paths, list(mloss_show))
+                                     (f'{epoch}/{epochs - 1}', mem, *mloss, targets.shape[0], imgs.shape[-1]))
+                callbacks.run('on_train_batch_end', model, ni, imgs, targets, paths, list(mloss))
                 if callbacks.stop_training:
                     return
             # end batch ------------------------------------------------------------------------------------------------
@@ -635,9 +635,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             stop = stopper(epoch=epoch, fitness=fi)  # early stop check
             if fi > best_fitness:
                 best_fitness = fi
-            # print(f"list mloss --> {list(mloss)}")
             log_vals = list(mloss) + list(results) + lr
-            # print(f"log vals ==> {log_vals}")
             callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
 
             # Save model
